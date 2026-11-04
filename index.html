@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
+<title>통합 카메라앨범 보드판</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;600;700&display=swap">
+<style>
+  /* 카메라가 화면을 채우는 한 화면 구조: 위 상태줄, 가운데 촬영 화면, 아래 큰 버튼 */
+  :root {
+    --bar: #101614;
+    --bar-line: #33403b;
+    --white: #ffffff;
+    --soft: #b9c4bf;
+    --on: #2c6e4f;
+    --ink: #17231f;
+    --sheet: #f3f5f2;
+    --line: #cfd6d1;
+    --sheet-soft: #55645f;
+    --font: "IBM Plex Sans KR", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body { background: #000; color: var(--white); font: 400 16px/1.4 var(--font); word-break: keep-all; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 3px solid #6cb4ff; outline-offset: 2px; }
+
+  .app { display: flex; flex-direction: column; height: 100%; }
+  .top { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 56px; padding-block: 6px; padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); background: var(--bar); }
+  .status { min-width: 0; margin: 0; font-size: 14px; line-height: 1.3; color: var(--soft); }
+  .switch { flex: none; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 6px 4px 12px; background: none; border: 1px solid var(--soft); border-radius: 4px; font-weight: 700; color: var(--white); }
+  .switch b { min-width: 44px; padding: 4px 6px; background: #5b6763; border-radius: 3px; font-size: 14px; text-align: center; color: var(--white); }
+  .switch[aria-pressed="true"] b { background: var(--on); }
+
+  .stage { position: relative; flex: 1 1 0; min-height: 0; background: #000; overflow: hidden; }
+  .stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+
+  .bottom { flex: none; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px)); padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); background: var(--bar); }
+  .side { min-height: 60px; padding: 4px; background: none; border: 1px solid var(--bar-line); border-radius: 4px; font-size: 15px; font-weight: 600; color: var(--white); line-height: 1.25; }
+  .side:disabled { opacity: .4; cursor: default; }
+  .shutter { width: 76px; height: 76px; padding: 0; background: var(--white); border: 5px solid var(--bar); outline: 3px solid var(--white); border-radius: 50%; }
+  .shutter:active { background: var(--soft); }
+  .wide { grid-column: 1 / -1; }
+  .primary { min-height: 60px; background: var(--white); color: var(--ink); border: 0; border-radius: 4px; font-size: 18px; font-weight: 700; }
+
+  /* 아래에서 올라오는 입력 칸: 보드판을 보면서 고치도록 화면의 절반까지만 차지합니다 */
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; flex-direction: column; max-height: 58%; background: var(--sheet); color: var(--ink); border-top: 3px solid var(--ink); padding-bottom: env(safe-area-inset-bottom, 0px); color-scheme: light; }
+  .sheet-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 56px; padding-block: 4px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); border-bottom: 1px solid var(--line); }
+  .sheet-head h2 { margin: 0; font-size: 18px; }
+  .done { min-height: 44px; padding: 0 16px; background: var(--ink); color: var(--white); border: 0; border-radius: 4px; font-weight: 700; }
+  .sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-block: 10px 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 10px; align-content: start; }
+  .row { display: grid; grid-template-columns: 96px minmax(0, 1fr) 44px; gap: 6px; align-items: center; }
+  .row input { width: 100%; min-width: 0; min-height: 46px; padding: 4px 8px; background: var(--white); color: var(--ink); border: 1px solid var(--sheet-soft); border-radius: 4px; font-size: 16px; }
+  .row .name { font-weight: 700; background: #e8ece9; }
+  .remove { width: 44px; min-height: 46px; padding: 0; background: var(--white); color: var(--ink); border: 1px solid var(--sheet-soft); border-radius: 4px; font-size: 13px; font-weight: 600; }
+  .sheet-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .sheet-actions button { min-height: 46px; background: var(--white); color: var(--ink); border: 2px solid var(--ink); border-radius: 4px; font-weight: 700; }
+  .sheet-actions button:disabled { opacity: .5; }
+  .note { margin: 0; min-height: 19px; font-size: 14px; color: var(--sheet-soft); }
+  [hidden] { display: none !important; }
+</style>
+
+<div class="app">
+  <header class="top">
+    <p class="status" id="status" role="status">카메라를 여는 중입니다.</p>
+    <button class="switch" id="boardSwitch" type="button" aria-pressed="true">보드판 <b id="switchText">켜짐</b></button>
+  </header>
+
+  <section class="stage" aria-label="촬영 화면">
+    <video id="video" playsinline muted autoplay hidden></video>
+    <canvas id="photo" hidden></canvas>
+    <canvas id="board" role="img" aria-label="보드판 표시"></canvas>
+  </section>
+
+  <footer class="bottom" id="shootBar">
+    <button class="side" id="editOpen" type="button">내용 입력</button>
+    <button class="shutter" id="shutter" type="button" aria-label="사진 찍기"></button>
+    <button class="side" id="cornerNext" type="button">위치<br><span id="cornerText">왼쪽 아래</span></button>
+  </footer>
+
+  <footer class="bottom" id="reviewBar" hidden>
+    <button class="side" id="retake" type="button">다시 찍기</button>
+    <span></span>
+    <button class="side" id="editOpen2" type="button">내용 고치기</button>
+  </footer>
+</div>
+
+<aside class="sheet" id="sheet" aria-label="보드판 내용 입력" hidden>
+  <div class="sheet-head">
+    <h2>보드판 내용</h2>
+    <button class="done" id="editClose" type="button">완료</button>
+  </div>
+  <div class="sheet-body">
+    <div id="rows" style="display:grid;gap:8px"></div>
+    <div class="sheet-actions">
+      <button id="addItem" type="button">+ 항목 추가</button>
+      <button id="resetItems" type="button">기본 양식으로</button>
+    </div>
+    <p class="note" id="note" role="status"></p>
+  </div>
+</aside>
+
+<script>
+  // ───── 직접 바꿔도 되는 값 ─────
+  var MAX_ITEMS = 8;                               // 보드판 최대 항목 수
+  var DEFAULT_NAMES = ['동·호수', '위치', '내용']; // 기본 양식
+  var WANT_WIDTH = 3840, WANT_HEIGHT = 2160;       // 카메라에 요청할 해상도
+  // ──────────────────────────
+
+  var FONT = '"IBM Plex Sans KR", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif';
+  var CORNERS = [['bl', '왼쪽 아래'], ['br', '오른쪽 아래'], ['tr', '오른쪽 위'], ['tl', '왼쪽 위']];
+  var state = {
+    on: true, cornerIndex: 0, mode: 'shoot', stream: null, sampleMode: false, itemSeq: 0,
+    items: [
+      { name: '동·호수', value: '101동 1203호' },
+      { name: '위치', value: '안방 천장' },
+      { name: '내용', value: '누수 흔적 확인' }
+    ]
+  };
+  var video = document.getElementById('video');
+  var photo = document.getElementById('photo');
+  var boardCanvas = document.getElementById('board');
+  var statusLine = document.getElementById('status');
+
+  function setStatus(text) { statusLine.textContent = text; }
+
+  function wrapText(ctx, text, maxWidth) {
+    var lines = [], line = '';
+    Array.from(text || ' ').forEach(function (ch) {
+      if (line && ctx.measureText(line + ch).width > maxWidth) { lines.push(line); line = ch; }
+      else line += ch;
+    });
+    lines.push(line);
+    return lines;
+  }
+
+  // 사진과 같은 크기의 투명한 판에 보드판만 그립니다. 그래서 사진 원본은 건드리지 않습니다.
+  function drawBoard() {
+    var size = currentSize();
+    boardCanvas.width = size.w;
+    boardCanvas.height = size.h;
+    var ctx = boardCanvas.getContext('2d');
+    ctx.clearRect(0, 0, size.w, size.h);
+    if (!state.on || !state.items.length) return;
+
+    var w = size.w, h = size.h;
+    var boardW = Math.round(w * (w >= h ? 0.5 : 0.8));
+    var unit = boardW / 460;
+    var margin = Math.round(Math.min(w, h) * 0.03);
+    var labelW = 110 * unit, pad = 12 * unit, fontSize = 23 * unit, lineH = 32 * unit;
+    ctx.font = '600 ' + fontSize + 'px ' + FONT;
+    var rows = state.items.map(function (item) {
+      var labelLines = wrapText(ctx, item.name, labelW - pad * 2);
+      var valueLines = wrapText(ctx, item.value, boardW - labelW - pad * 2);
+      return { labelLines: labelLines, valueLines: valueLines, height: Math.max(labelLines.length, valueLines.length) * lineH + pad * 1.2 };
+    });
+    var boardH = rows.reduce(function (sum, row) { return sum + row.height; }, 0);
+    var corner = CORNERS[state.cornerIndex][0];
+    var x = corner[1] === 'l' ? margin : w - boardW - margin;
+    var y = corner[0] === 't' ? margin : h - boardH - margin;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x, y, boardW, boardH);
+    ctx.fillStyle = '#e8ece9';
+    ctx.fillRect(x, y, labelW, boardH);
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = Math.max(1, 2 * unit);
+    ctx.strokeRect(x, y, boardW, boardH);
+    ctx.textBaseline = 'middle';
+    var top = y;
+    rows.forEach(function (row, index) {
+      if (index) { ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x + boardW, top); ctx.stroke(); }
+      ctx.fillStyle = '#111111';
+      ctx.font = '700 ' + fontSize + 'px ' + FONT;
+      row.labelLines.forEach(function (text, i) { ctx.fillText(text, x + pad, top + pad * 0.6 + lineH * (i + 0.5)); });
+      ctx.font = '600 ' + fontSize + 'px ' + FONT;
+      row.valueLines.forEach(function (text, i) { ctx.fillText(text, x + labelW + pad, top + pad * 0.6 + lineH * (i + 0.5)); });
+      top += row.height;
+    });
+    ctx.beginPath();
+    ctx.moveTo(x + labelW, y);
+    ctx.lineTo(x + labelW, y + boardH);
+    ctx.stroke();
+  }
+
+  function currentSize() {
+    if (state.mode === 'review' || state.sampleMode) return { w: photo.width || 900, h: photo.height || 1200 };
+    return { w: video.videoWidth || 900, h: video.videoHeight || 1200 };
+  }
+
+  function drawSample() {
+    photo.width = 900;
+    photo.height = 1200;
+    var ctx = photo.getContext('2d');
+    ctx.fillStyle = '#e9e5da';
+    ctx.fillRect(0, 0, 900, 1200);
+    ctx.fillStyle = '#f7f6f1';
+    ctx.fillRect(0, 0, 900, 220);
+    ctx.fillStyle = '#b9b4a6';
+    ctx.fillRect(0, 220, 900, 8);
+    ctx.fillStyle = 'rgba(122, 94, 58, .34)';
+    ctx.beginPath();
+    ctx.ellipse(560, 400, 190, 100, -.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#6d6455';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(560, 228);
+    ctx.lineTo(530, 340);
+    ctx.lineTo(585, 460);
+    ctx.lineTo(560, 590);
+    ctx.stroke();
+  }
+
+  function showSample(reason) {
+    state.sampleMode = true;
+    drawSample();
+    video.hidden = true;
+    photo.hidden = false;
+    setStatus('카메라 열기 실패: ' + reason + '. 예시 그림으로 표시 중입니다.');
+    drawBoard();
+  }
+
+  function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showSample('이 환경에서 카메라 기능을 지원하지 않음');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: WANT_WIDTH }, height: { ideal: WANT_HEIGHT } },
+      audio: false
+    }).then(function (stream) {
+      state.stream = stream;
+      state.sampleMode = false;
+      video.srcObject = stream;
+      video.hidden = false;
+      photo.hidden = true;
+      return video.play();
+    }).catch(function (error) {
+      showSample((error && error.name) || '알 수 없는 오류');
+    });
+  }
+
+  video.addEventListener('loadedmetadata', function () {
+    setStatus('카메라 연결됨, ' + video.videoWidth + ' × ' + video.videoHeight);
+    drawBoard();
+  });
+
+  function takePhoto() {
+    if (state.sampleMode) {
+      state.mode = 'review';
+    } else {
+      if (!video.videoWidth) return;
+      photo.width = video.videoWidth;
+      photo.height = video.videoHeight;
+      photo.getContext('2d').drawImage(video, 0, 0);
+      state.mode = 'review';
+      video.pause();
+      video.hidden = true;
+      photo.hidden = false;
+      setStatus('찍은 사진 ' + photo.width + ' × ' + photo.height + ', 저장은 v0.2에서 연결됩니다.');
+    }
+    document.getElementById('shootBar').hidden = true;
+    document.getElementById('reviewBar').hidden = false;
+    drawBoard();
+  }
+
+  function retake() {
+    state.mode = 'shoot';
+    document.getElementById('shootBar').hidden = false;
+    document.getElementById('reviewBar').hidden = true;
+    if (state.stream) {
+      photo.hidden = true;
+      video.hidden = false;
+      video.play();
+      setStatus('카메라 연결됨, ' + video.videoWidth + ' × ' + video.videoHeight);
+    }
+    drawBoard();
+  }
+
+  function renderRows() {
+    var rows = document.getElementById('rows');
+    rows.innerHTML = '';
+    state.items.forEach(function (item) {
+      if (item.id === undefined) item.id = state.itemSeq++;
+      var row = document.createElement('div');
+      row.className = 'row';
+      var name = document.createElement('input');
+      name.className = 'name';
+      name.id = 'name' + item.id;
+      name.maxLength = 8;
+      name.value = item.name;
+      name.setAttribute('aria-label', '항목 이름');
+      name.addEventListener('input', function () { item.name = name.value; drawBoard(); });
+      var value = document.createElement('input');
+      value.id = 'value' + item.id;
+      value.maxLength = 80;
+      value.value = item.value;
+      value.setAttribute('aria-label', (item.name || '항목') + ' 내용');
+      value.addEventListener('input', function () { item.value = value.value; drawBoard(); });
+      var remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'remove';
+      remove.textContent = '삭제';
+      remove.setAttribute('aria-label', (item.name || '이름 없는') + ' 항목 삭제');
+      remove.addEventListener('click', function () {
+        state.items.splice(state.items.indexOf(item), 1);
+        renderRows();
+        drawBoard();
+      });
+      row.appendChild(name);
+      row.appendChild(value);
+      row.appendChild(remove);
+      rows.appendChild(row);
+    });
+    var full = state.items.length >= MAX_ITEMS;
+    document.getElementById('addItem').disabled = full;
+    document.getElementById('note').textContent = full ? '항목은 ' + MAX_ITEMS + '개까지 넣을 수 있습니다.'
+      : (state.items.length ? '' : '항목이 없으면 보드판이 표시되지 않습니다.');
+  }
+
+  function setSheet(open) {
+    document.getElementById('sheet').hidden = !open;
+    if (open) renderRows();
+  }
+
+  document.getElementById('boardSwitch').addEventListener('click', function () {
+    state.on = !state.on;
+    this.setAttribute('aria-pressed', String(state.on));
+    document.getElementById('switchText').textContent = state.on ? '켜짐' : '꺼짐';
+    drawBoard();
+  });
+  document.getElementById('shutter').addEventListener('click', takePhoto);
+  document.getElementById('retake').addEventListener('click', retake);
+  document.getElementById('editOpen').addEventListener('click', function () { setSheet(true); });
+  document.getElementById('editOpen2').addEventListener('click', function () { setSheet(true); });
+  document.getElementById('editClose').addEventListener('click', function () { setSheet(false); });
+  document.getElementById('cornerNext').addEventListener('click', function () {
+    state.cornerIndex = (state.cornerIndex + 1) % CORNERS.length;
+    document.getElementById('cornerText').textContent = CORNERS[state.cornerIndex][1];
+    drawBoard();
+  });
+  document.getElementById('addItem').addEventListener('click', function () {
+    if (state.items.length >= MAX_ITEMS) return;
+    var item = { name: '새 항목', value: '' };
+    state.items.push(item);
+    renderRows();
+    drawBoard();
+    var input = document.getElementById('name' + item.id);
+    input.focus();
+    input.select();
+  });
+  document.getElementById('resetItems').addEventListener('click', function () {
+    state.items = DEFAULT_NAMES.map(function (name) { return { name: name, value: '' }; });
+    renderRows();
+    drawBoard();
+  });
+
+  drawBoard();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(drawBoard);
+  startCamera();
+</script>
+
+</body>
+</html>
