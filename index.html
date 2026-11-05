@@ -46,7 +46,7 @@
   .side:disabled { opacity: .4; cursor: default; }
   .shutter { width: 76px; height: 76px; padding: 0; background: var(--white); border: 5px solid var(--bar); outline: 3px solid var(--white); border-radius: 50%; }
   .shutter:active { background: var(--soft); }
-  .wide { grid-column: 1 / -1; }
+  .side.save { min-width: 76px; background: var(--white); color: var(--ink); border-color: var(--white); font-weight: 700; }
   .primary { min-height: 60px; background: var(--white); color: var(--ink); border: 0; border-radius: 4px; font-size: 18px; font-weight: 700; }
 
   /* 아래에서 올라오는 입력 칸: 보드판을 보면서 고치도록 화면의 절반까지만 차지합니다 */
@@ -78,7 +78,7 @@
     .side { width: 100%; min-height: 44px; height: 100%; max-height: 72px; font-size: 14px; }
     .shutter { width: 66px; height: 66px; }
     .bottom > span { display: none; }
-    #reviewBar { grid-template-rows: 1fr 1fr; }
+    #reviewBar { grid-template-rows: repeat(3, 1fr); }
     .full { display: block; }
     .sheet { left: auto; top: 0; width: min(440px, 58%); max-height: none; border-top: 0; border-left: 3px solid var(--ink); padding-right: env(safe-area-inset-right, 0px); }
   }
@@ -106,7 +106,8 @@
 
   <footer class="bottom" id="reviewBar" hidden>
     <button class="side" id="retake" type="button">다시 찍기</button>
-    <span></span>
+    <button class="side save" id="testSave" type="button" hidden>시험 저장</button>
+    <span id="saveSpacer"></span>
     <button class="side" id="editOpen2" type="button">내용 고치기</button>
   </footer>
 </div>
@@ -390,6 +391,34 @@
     state.items = DEFAULT_NAMES.map(function (name) { return { name: name, value: '' }; });
     renderRows();
     drawBoard();
+  });
+
+  // 화질 비교용: 사진과 보드판을 합친 JPEG를 휴대폰에 내려받습니다. 어디로도 전송하지 않습니다.
+  var testSave = document.getElementById('testSave');
+  if (window.top === window) {
+    testSave.hidden = false;
+    document.getElementById('saveSpacer').hidden = true;
+  }
+  testSave.addEventListener('click', function () {
+    var merged = document.createElement('canvas');
+    merged.width = photo.width;
+    merged.height = photo.height;
+    var context = merged.getContext('2d');
+    context.drawImage(photo, 0, 0);
+    if (state.on && state.items.length) context.drawImage(boardCanvas, 0, 0);
+    merged.toBlob(function (blob) {
+      if (!blob) { setStatus('사진을 만들지 못했습니다. 다시 찍어 주세요.'); return; }
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      var now = new Date();
+      link.href = url;
+      link.download = '보드판시험_' + now.getHours() + '시' + now.getMinutes() + '분' + now.getSeconds() + '초.jpg';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+      setStatus('저장 요청 완료, ' + photo.width + ' × ' + photo.height + ', ' + (blob.size / 1048576).toFixed(1) + 'MB');
+    }, 'image/jpeg', 0.92);
   });
 
   var fullButton = document.getElementById('fullButton');
