@@ -63,6 +63,11 @@
   .sheet-actions button { min-height: 46px; background: var(--white); color: var(--ink); border: 2px solid var(--ink); border-radius: 4px; font-weight: 700; }
   .sheet-actions button:disabled { opacity: .5; }
   .note { margin: 0; min-height: 19px; font-size: 14px; color: var(--sheet-soft); }
+  .tools { position: absolute; top: 8px; left: 8px; z-index: 2; display: flex; gap: 6px; }
+  .tool { min-width: 44px; min-height: 44px; padding: 0 10px; background: rgba(16, 22, 20, .78); border: 1px solid var(--soft); border-radius: 4px; color: var(--white); font-size: 14px; font-weight: 700; }
+  .tool:disabled { opacity: .45; cursor: default; }
+  .zoom { display: flex; align-items: center; gap: 2px; }
+  .zoom output { min-width: 42px; padding: 0 2px; text-align: center; font-size: 14px; font-weight: 700; text-shadow: 0 0 3px #000; }
   .full { position: absolute; top: 8px; right: 8px; z-index: 2; display: none; min-height: 44px; padding: 0 12px; background: rgba(16, 22, 20, .78); border: 1px solid var(--soft); border-radius: 4px; color: var(--white); font-size: 14px; font-weight: 600; }
 
   /* 가로로 들었을 때: 사진을 최대한 크게 보여 주고 버튼은 오른쪽 세로 줄로 옮깁니다 */
@@ -93,6 +98,14 @@
 
   <section class="stage" aria-label="촬영 화면">
     <video id="video" playsinline muted autoplay hidden></video>
+    <div class="tools" id="tools" hidden>
+      <button class="tool" id="lensNext" type="button" hidden>렌즈 1/1</button>
+      <div class="zoom" id="zoomBox" hidden>
+        <button class="tool" id="zoomOut" type="button" aria-label="축소">−</button>
+        <output id="zoomValue">1.0×</output>
+        <button class="tool" id="zoomIn" type="button" aria-label="확대">+</button>
+      </div>
+    </div>
     <canvas id="photo" hidden></canvas>
     <canvas id="board" role="img" aria-label="보드판 표시"></canvas>
     <button class="full" id="fullButton" type="button" hidden>전체 화면</button>
@@ -131,7 +144,8 @@
   // ───── 직접 바꿔도 되는 값 ─────
   var MAX_ITEMS = 8;                               // 보드판 최대 항목 수
   var DEFAULT_NAMES = ['동·호수', '위치', '내용']; // 기본 양식
-  var WANT_WIDTH = 3840, WANT_HEIGHT = 2160;       // 카메라에 요청할 해상도
+  var WANT_WIDTH = 4000, WANT_HEIGHT = 3000;       // 카메라에 요청할 해상도(4:3)
+  var ZOOM_STEP = 0.5;                             // 확대 버튼을 한 번 누를 때 바뀌는 배율
   var BOARD_SIZE = 0.62;                           // 보드판 가로 길이. 사진의 짧은 변 대비 비율이며, 줄이면 작아집니다
   // ──────────────────────────
 
@@ -253,21 +267,137 @@
     drawBoard();
   }
 
-  function startCamera() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      showSample('이 환경에서 카메라 기능을 지원하지 않음');
-      return;
-    }
-    navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: WANT_WIDTH }, height: { ideal: WANT_HEIGHT } },
-      audio: false
-    }).then(function (stream) {
+  // ───── 카메라와 렌즈 ─────
+  var LENS_KEY = 'album.lens';
+  var lens = { list: [], index: 0, autoChecked: false };
+  var zoom = null;
+
+  function savedLens() {
+    try { return localStorage.getItem(LENS_KEY) || ''; } catch (error) { return ''; }
+  }
+  function saveLens(id) {
+    try { localStorage.setItem(LENS_KEY, id); } catch (error) {}
+  }
+
+  function stopCamera() {
+    if (state.stream) state.stream.getTracks().forEach(function (track) { track.stop(); });
+    state.stream = null;
+  }
+
+  function cameraConstraints(deviceId) {
+    var video = { width: { ideal: WANT_WIDTH }, height: { ideal: WANT_HEIGHT }, aspectRatio: { ideal: 4 / 3 } };
+    if (deviceId) video.deviceId = { exact: deviceId };
+    else video.facingMode = { ideal: 'environment' };
+    return { video: video, audio: false };
+  }
+
+  function openStream(deviceId) {
+    stopCamera();
+    return navigator.mediaDevices.getUserMedia(cameraConstraints(deviceId)).then(function (stream) {
       state.stream = stream;
       state.sampleMode = false;
       video.srcObject = stream;
       video.hidden = false;
       photo.hidden = true;
-      return video.play();
+      document.getElementById('tools').hidden = false;
+      return video.play().then(function () { return stream; });
+    });
+  }
+
+  function currentDeviceId(stream) {
+    var track = stream.getVideoTracks()[0];
+    var settings = track && track.getSettings ? track.getSettings() : {};
+    return settings.deviceId || '';
+  }
+
+  // 후면 렌즈만 고릅니다. 이름에 전면 표시가 있으면 뺍니다.
+  function refreshLensList() {
+    return navigator.mediaDevices.enumerateDevices().then(function (devices) {
+      lens.list = devices.filter(function (device) {
+        return device.kind === 'videoinput' && !/front|전면/i.test(device.label);
+      });
+    });
+  }
+
+  function preferredLensIndex() {
+    var named = lens.list.findIndex(function (device) { return /camera2?\s*0\b/i.test(device.label); });
+    return named >= 0 ? named : 0;
+  }
+
+  function updateLensButton() {
+    var button = document.getElementById('lensNext');
+    button.hidden = lens.list.length < 2;
+    button.textContent = '렌즈 ' + (lens.index + 1) + '/' + lens.list.length;
+  }
+
+  // 휴대폰이 지원하면 확대 버튼을 보여 줍니다.
+  function setupZoom(stream) {
+    var track = stream.getVideoTracks()[0];
+    var caps = track && track.getCapabilities ? track.getCapabilities() : {};
+    var box = document.getElementById('zoomBox');
+    if (!caps.zoom || !(caps.zoom.max > caps.zoom.min)) {
+      zoom = null;
+      box.hidden = true;
+      return;
+    }
+    var settings = track.getSettings ? track.getSettings() : {};
+    zoom = { track: track, min: caps.zoom.min, max: caps.zoom.max, value: settings.zoom || caps.zoom.min };
+    box.hidden = false;
+    showZoom();
+  }
+  function showZoom() {
+    document.getElementById('zoomValue').textContent = zoom.value.toFixed(1) + '×';
+    document.getElementById('zoomOut').disabled = zoom.value <= zoom.min;
+    document.getElementById('zoomIn').disabled = zoom.value >= zoom.max;
+  }
+  function changeZoom(direction) {
+    if (!zoom) return;
+    var next = Math.min(zoom.max, Math.max(zoom.min, zoom.value + direction * ZOOM_STEP));
+    zoom.track.applyConstraints({ advanced: [{ zoom: next }] }).then(function () {
+      zoom.value = next;
+      showZoom();
+    }).catch(function () {
+      document.getElementById('zoomBox').hidden = true;
+    });
+  }
+
+  function useLens(index) {
+    lens.index = index;
+    var id = lens.list[index].deviceId;
+    return openStream(id).then(function (stream) {
+      saveLens(id);
+      updateLensButton();
+      setupZoom(stream);
+      return stream;
+    });
+  }
+
+  function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showSample('이 환경에서 카메라 기능을 지원하지 않음');
+      return;
+    }
+    var saved = savedLens();
+    openStream(saved).catch(function (error) {
+      // 저장된 렌즈가 없어졌으면 기본 후면 카메라로 다시 엽니다.
+      if (saved) {
+        saved = '';
+        return openStream('');
+      }
+      throw error;
+    }).then(function (stream) {
+      // 권한을 받은 뒤에야 렌즈 이름을 읽을 수 있습니다.
+      return refreshLensList().then(function () {
+        var currentId = currentDeviceId(stream);
+        var found = lens.list.findIndex(function (device) { return device.deviceId === currentId; });
+        if (!saved && lens.list.length > 1) {
+          var preferred = preferredLensIndex();
+          if (found !== preferred) return useLens(preferred);
+        }
+        lens.index = found >= 0 ? found : 0;
+        updateLensButton();
+        setupZoom(stream);
+      });
     }).catch(function (error) {
       showSample((error && error.name) || '알 수 없는 오류');
     });
@@ -275,7 +405,7 @@
 
   function showCameraReady() {
     if (state.mode !== 'shoot' || !video.videoWidth) return;
-    setStatus('카메라 연결됨, ' + video.videoWidth + ' × ' + video.videoHeight, true);
+    setStatus('렌즈 ' + (lens.index + 1) + ', ' + video.videoWidth + ' × ' + video.videoHeight, true);
     drawBoard();
   }
   video.addEventListener('loadedmetadata', showCameraReady);
@@ -295,6 +425,7 @@
       video.pause();
       video.hidden = true;
       photo.hidden = false;
+      document.getElementById('tools').hidden = true;
       setStatus('찍은 사진 ' + photo.width + ' × ' + photo.height + ', 저장은 v0.2에서 연결됩니다.', true);
     }
     document.getElementById('shootBar').hidden = true;
@@ -309,6 +440,7 @@
     if (state.stream) {
       photo.hidden = true;
       video.hidden = false;
+      document.getElementById('tools').hidden = false;
       video.play();
       showCameraReady();
     }
@@ -368,6 +500,16 @@
     drawBoard();
   });
   document.getElementById('shutter').addEventListener('click', takePhoto);
+  document.getElementById('lensNext').addEventListener('click', function () {
+    var button = this;
+    button.disabled = true;
+    useLens((lens.index + 1) % lens.list.length).catch(function (error) {
+      setStatus('렌즈를 바꾸지 못했습니다: ' + ((error && error.name) || '알 수 없는 오류'));
+      return openStream('');
+    }).then(function () { button.disabled = false; });
+  });
+  document.getElementById('zoomOut').addEventListener('click', function () { changeZoom(-1); });
+  document.getElementById('zoomIn').addEventListener('click', function () { changeZoom(1); });
   document.getElementById('retake').addEventListener('click', retake);
   document.getElementById('editOpen').addEventListener('click', function () { setSheet(true); });
   document.getElementById('editOpen2').addEventListener('click', function () { setSheet(true); });
