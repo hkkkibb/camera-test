@@ -68,6 +68,9 @@
   .tool:disabled { opacity: .45; cursor: default; }
   .zoom { display: flex; align-items: center; gap: 2px; }
   .zoom output { min-width: 42px; padding: 0 2px; text-align: center; font-size: 14px; font-weight: 700; text-shadow: 0 0 3px #000; }
+  .hint { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 16px; text-align: center; }
+  .hint strong { font-size: 22px; }
+  .hint p { margin: 0; color: var(--soft); }
   .full { position: absolute; top: 8px; right: 8px; z-index: 2; display: none; min-height: 44px; padding: 0 12px; background: rgba(16, 22, 20, .78); border: 1px solid var(--soft); border-radius: 4px; color: var(--white); font-size: 14px; font-weight: 600; }
 
   /* 가로로 들었을 때: 사진을 최대한 크게 보여 주고 버튼은 오른쪽 세로 줄로 옮깁니다 */
@@ -109,6 +112,11 @@
     <canvas id="photo" hidden></canvas>
     <canvas id="board" role="img" aria-label="보드판 표시"></canvas>
     <button class="full" id="fullButton" type="button" hidden>전체 화면</button>
+    <div class="hint" id="hint" hidden>
+      <strong>기본 카메라 사용 중</strong>
+      <p>아래 동그라미를 누르면 휴대폰 기본 카메라가 열립니다.</p>
+      <p id="nativeCount"></p>
+    </div>
   </section>
 
   <footer class="bottom" id="shootBar">
@@ -124,6 +132,8 @@
     <button class="side" id="editOpen2" type="button">내용 고치기</button>
   </footer>
 </div>
+
+<input id="nativeInput" type="file" accept="image/*" capture="environment" hidden>
 
 <aside class="sheet" id="sheet" aria-label="보드판 내용 입력" hidden>
   <div class="sheet-head">
@@ -404,7 +414,7 @@
   }
 
   function showCameraReady() {
-    if (state.mode !== 'shoot' || !video.videoWidth) return;
+    if (state.mode !== 'shoot' || !state.on || !video.videoWidth) return;
     setStatus('렌즈 ' + (lens.index + 1) + ', ' + video.videoWidth + ' × ' + video.videoHeight, true);
     drawBoard();
   }
@@ -437,15 +447,102 @@
     state.mode = 'shoot';
     document.getElementById('shootBar').hidden = false;
     document.getElementById('reviewBar').hidden = true;
-    if (state.stream) {
+    applyCameraMode();
+  }
+
+  // 보드판을 켜면 앱 카메라, 끄면 휴대폰 기본 카메라를 씁니다.
+  function applyCameraMode() {
+    var hint = document.getElementById('hint');
+    var editButton = document.getElementById('editOpen');
+    var cornerButton = document.getElementById('cornerNext');
+    editButton.disabled = !state.on;
+    cornerButton.disabled = !state.on;
+    if (state.on) {
+      hint.hidden = true;
       photo.hidden = true;
-      video.hidden = false;
-      document.getElementById('tools').hidden = false;
-      video.play();
-      showCameraReady();
+      if (state.stream) {
+        video.hidden = false;
+        document.getElementById('tools').hidden = false;
+        video.play();
+        showCameraReady();
+      } else {
+        setStatus('카메라를 여는 중입니다.');
+        startCamera();
+      }
+    } else {
+      stopCamera();
+      video.srcObject = null;
+      video.hidden = true;
+      photo.hidden = true;
+      document.getElementById('tools').hidden = true;
+      hint.hidden = false;
+      showNativeCount();
+      setStatus('기본 카메라 모드', true);
     }
     drawBoard();
   }
+
+  // ───── 기본 카메라 복귀 시험: 앱이 새로 열리며 사진이 사라지는지 횟수를 셉니다 ─────
+  var PENDING_KEY = 'album.pendingCamera', SUCCESS_KEY = 'album.nativeSuccess', LOST_KEY = 'album.nativeLost';
+  var nativeWatch = null;
+  function readStore(key) { try { return localStorage.getItem(key) || ''; } catch (error) { return ''; } }
+  function writeStore(key, value) {
+    try {
+      if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+    } catch (error) {}
+  }
+  function addCount(key) { writeStore(key, String(Number(readStore(key) || 0) + 1)); }
+  function showNativeCount() {
+    document.getElementById('nativeCount').textContent =
+      '시험 결과: 성공 ' + Number(readStore(SUCCESS_KEY) || 0) + '회, 사진 사라짐 ' + Number(readStore(LOST_KEY) || 0) + '회';
+  }
+  function openNativeCamera() {
+    writeStore(PENDING_KEY, String(Date.now()));
+    document.getElementById('nativeInput').click();
+  }
+  function cancelNative(message) {
+    writeStore(PENDING_KEY, null);
+    if (state.mode === 'shoot' && !state.on) setStatus(message);
+  }
+  var nativeInput = document.getElementById('nativeInput');
+  nativeInput.addEventListener('cancel', function () { cancelNative('촬영을 취소했습니다.'); });
+  // 취소 신호가 오지 않는 휴대폰을 위해, 돌아온 뒤 사진이 없으면 취소로 봅니다.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible' || !readStore(PENDING_KEY)) return;
+    clearTimeout(nativeWatch);
+    nativeWatch = setTimeout(function () {
+      if (readStore(PENDING_KEY)) cancelNative('촬영을 취소했습니다.');
+    }, 5000);
+  });
+  nativeInput.addEventListener('change', function (event) {
+    var file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    clearTimeout(nativeWatch);
+    writeStore(PENDING_KEY, null);
+    if (!file) return;
+    var url = URL.createObjectURL(file);
+    var image = new Image();
+    image.onload = function () {
+      addCount(SUCCESS_KEY);
+      var scale = Math.min(1, WANT_WIDTH / Math.max(image.naturalWidth, image.naturalHeight));
+      photo.width = Math.round(image.naturalWidth * scale);
+      photo.height = Math.round(image.naturalHeight * scale);
+      photo.getContext('2d').drawImage(image, 0, 0, photo.width, photo.height);
+      URL.revokeObjectURL(url);
+      state.mode = 'review';
+      document.getElementById('hint').hidden = true;
+      photo.hidden = false;
+      document.getElementById('shootBar').hidden = true;
+      document.getElementById('reviewBar').hidden = false;
+      setStatus('기본 카메라 사진 ' + image.naturalWidth + ' × ' + image.naturalHeight + ', 원본 ' + (file.size / 1048576).toFixed(1) + 'MB');
+      drawBoard();
+    };
+    image.onerror = function () {
+      URL.revokeObjectURL(url);
+      setStatus('이 사진은 열 수 없습니다. 다시 찍어 주세요.');
+    };
+    image.src = url;
+  });
 
   function renderRows() {
     var rows = document.getElementById('rows');
@@ -493,13 +590,23 @@
     if (open) renderRows();
   }
 
+  function setSwitch() {
+    var button = document.getElementById('boardSwitch');
+    button.setAttribute('aria-pressed', String(state.on));
+    document.getElementById('switchText').textContent = state.on ? '켜짐' : '꺼짐';
+  }
   document.getElementById('boardSwitch').addEventListener('click', function () {
     state.on = !state.on;
-    this.setAttribute('aria-pressed', String(state.on));
-    document.getElementById('switchText').textContent = state.on ? '켜짐' : '꺼짐';
-    drawBoard();
+    writeStore('album.board', state.on ? 'on' : 'off');
+    setSwitch();
+    // 찍은 사진을 보는 중이면 보드판 표시만 바꿉니다.
+    if (state.mode === 'review') drawBoard();
+    else applyCameraMode();
   });
-  document.getElementById('shutter').addEventListener('click', takePhoto);
+  document.getElementById('shutter').addEventListener('click', function () {
+    if (state.on) takePhoto();
+    else openNativeCamera();
+  });
   document.getElementById('lensNext').addEventListener('click', function () {
     var button = this;
     button.disabled = true;
@@ -577,7 +684,15 @@
 
   drawBoard();
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(drawBoard);
-  startCamera();
+  state.on = readStore('album.board') !== 'off';
+  setSwitch();
+  var returnedLost = !!readStore(PENDING_KEY);
+  if (returnedLost) {
+    addCount(LOST_KEY);
+    writeStore(PENDING_KEY, null);
+  }
+  applyCameraMode();
+  if (returnedLost) setStatus('카메라에서 돌아오며 앱이 새로 열려 사진이 전달되지 않았습니다.');
 </script>
 
 </body>
